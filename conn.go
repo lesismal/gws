@@ -100,13 +100,44 @@ func (c *Conn) ReadLoop() {
 	// Infinite loop to read messages, if an error occurs, trigger the error event and exit the loop
 	for {
 		if err := c.readMessage(); err != nil {
-			c.emitError(true, err)
+			c.handleReadError(err)
 			break
 		}
 	}
+}
 
-	err, ok := c.ev.Load().(error)
-	_ = c.dispatchControl(OpcodeCloseConnection, nil, internal.SelectValue(ok, err, errEmpty))
+// ReadMessage
+// 读取并返回单个完整的 websocket message, 不会触发 OnOpen 事件, 也不会派发给 OnMessage 回调.
+// 如果发生错误, 会触发错误事件并进行资源回收, 和 ReadLoop 结束时的处理逻辑一致.
+// Reads and returns a single complete websocket message, without triggering the OnOpen event
+// or dispatching to the OnMessage callback.
+// If an error occurs, it triggers the error event and reclaims resources, consistent with
+// the handling logic at the end of ReadLoop.
+func (c *Conn) ReadMessage() (*Message, error) {
+	for {
+		msg, err := c.readFrame()
+		if err == nil && msg != nil {
+			err = c.processMessage(msg)
+		}
+		if err != nil {
+			c.handleReadError(err)
+			return nil, err
+		}
+		if msg != nil {
+			return msg, nil
+		}
+	}
+}
+
+// 处理读取错误: 触发错误事件, 分发关闭回调并回收资源
+// 逻辑和 ReadLoop 结束时的处理一致.
+// Handles a read error: emits the error event, dispatches the close callback, and reclaims
+// resources, consistent with the handling at the end of ReadLoop.
+func (c *Conn) handleReadError(err error) {
+	c.emitError(true, err)
+
+	evErr, ok := c.ev.Load().(error)
+	_ = c.dispatchControl(OpcodeCloseConnection, nil, internal.SelectValue(ok, evErr, errEmpty))
 
 	// 回收资源
 	// Reclaim resources
